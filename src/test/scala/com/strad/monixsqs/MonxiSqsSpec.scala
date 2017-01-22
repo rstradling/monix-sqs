@@ -15,13 +15,14 @@ class MonxiSqsSpec extends Specification { def is = s2"""
  def e1 = { 
  	val conn = SqsConnection(new DefaultAWSCredentialsProviderChain(), Region.getRegion(Regions.US_EAST_1), 10, "dev1-globalsearch-contacts-1")
  	val obs  = SqsListener.getMessages(conn)
-	val myCancel: Cancelable = obs.map { resp =>
+	val myCancel: Cancelable = obs.takeWhileNotCanceled(conn).map { resp =>
     println(resp.result)
     println("--------------------------------")
     Thread.sleep(5000)
     SqsListener.delete(conn)(resp.result).runAsync
   }.subscribe()
-   Thread.sleep(300000)
+   Thread.sleep(5000)
+   myCancel.cancel()
 	"Processing" must have size(11)
  }
 }

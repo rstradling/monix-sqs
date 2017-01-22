@@ -1,5 +1,7 @@
 package com.strad.monixsqs
 
+import java.util.concurrent.atomic.AtomicBoolean
+
 import com.amazonaws.auth.AWSCredentialsProvider
 import com.amazonaws.regions.Region
 import com.amazonaws.services.sqs.{AmazonSQSAsync, AmazonSQSAsyncClient}
@@ -8,12 +10,14 @@ import com.amazonaws.services.sqs.model._
 import monix.eval.Task
 import monix.reactive.Observable
 import monix.execution.Cancelable
+import monix.execution.cancelables.BooleanCancelable
 
 
 case class SqsListenerResponse(client: AmazonSQSAsync, url: String, result: List[Message])
 
-case class SqsConnection(provider: AWSCredentialsProvider, region: Region, 
-	maxNumberOfMessages: Int, qName: String) {
+case class SqsConnection(provider: AWSCredentialsProvider, region: Region,
+	maxNumberOfMessages: Int, qName: String) extends BooleanCancelable {
+  val isCancelled = new AtomicBoolean(false)
 	val sqs = new AmazonSQSAsyncClient(provider)
 	sqs.setRegion(region)
   val client = new AmazonSQSBufferedAsyncClient(sqs)
@@ -23,15 +27,20 @@ case class SqsConnection(provider: AWSCredentialsProvider, region: Region,
   if (statusCode < 200 || statusCode >= 300) {
     throw new RuntimeException("Could not get the attributes of the queue named $qName")
   }
+  override def cancel() : Unit = {
+    isCancelled.set(true)
+    client.shutdown()
+  }
+
+  override def isCanceled() :  Boolean = {
+    isCancelled.get
+  }
 }
 
 object SqsListener {
 	def getMessages(con: SqsConnection) : Observable[SqsListenerResponse] = {
     import scala.collection.JavaConverters._
     Observable.unsafeCreate { subscriber =>
-      val cancel = Cancelable(con.client.shutdown)
-
-      // Use Task.apply instead of eval if you want to fork threads, or use futures
       val makeRequest = Task.apply {
         val messageReq = new ReceiveMessageRequest(con.qName).withMaxNumberOfMessages(con.maxNumberOfMessages)
         val ret = {
@@ -42,10 +51,10 @@ object SqsListener {
         ret
       }
       Observable.repeat(()).mapTask(_ => makeRequest)
-      .doOnTerminate(cancel.cancel())
-      .doOnSubscriptionCancel(cancel.cancel())
+      .doOnTerminate(con.cancel())
+      .doOnSubscriptionCancel(con.cancel())
       .unsafeSubscribeFn(subscriber)
-      cancel
+      con
     }
   }
   def delete(con: SqsConnection)(messages: List[Message]): Task[Unit] = {
@@ -55,4 +64,4 @@ object SqsListener {
       }
     }
   }
-}  
+}
